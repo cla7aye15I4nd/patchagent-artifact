@@ -1,0 +1,50 @@
+#!/usr/bin/env python3
+
+import os
+import tempfile
+import argparse
+import traceback
+import multiprocessing
+from nvwa.sky.utils import get_all_task
+from nvwa.context import ContextManager
+from nvwa.logger import log
+
+parser = argparse.ArgumentParser(description="Nvwa Verify Tool")
+parser.add_argument("--project", type=str, help="project name")
+parser.add_argument("--tag", type=str, help="tag name")
+parser.add_argument("--max_proc", type=int, default=50, help="max number of processes")
+parser.add_argument("--skip_linux", action="store_true", help="skip linux tasks")
+parser.add_argument("--skip_extractfix", action="store_true", help="skip extractfix tasks")
+args = parser.parse_args()
+
+base_path = os.path.dirname(os.path.abspath(__file__))
+
+
+def validate(task):
+    for model in ["gpt-4o", "gpt-4-turbo", "claude-3-opus", "claude-3-sonnet", "claude-3-haiku"]:
+        log_path = os.path.join(base_path, "archives", model)
+        task.patch = None
+        cm = ContextManager(task, load_context=True, path=log_path)
+        if cm.patch is not None:
+            log.info(f"Verifing {model} {cm.path}")
+            with tempfile.NamedTemporaryFile(delete=False, mode="w") as f:
+                f.write(cm.patch)
+                f.flush()
+
+            try:
+                ret, report = task.validate(f.name)
+                if not ret:
+                    os.unlink(cm.path)
+                    log.error(f"Task {cm.path} failed to validate {report}")
+            except Exception as e:
+                os.unlink(cm.path)
+                log.error(f"Task {cm.path} failed to validate {e}")
+                log.error(traceback.format_exc())
+
+            os.unlink(f.name)
+
+
+if __name__ == "__main__":
+    tasks = get_all_task(project=args.project, tag=args.tag, skip_setup=True, skip_linux=args.skip_linux, skip_extractfix=args.skip_extractfix)
+    with multiprocessing.Pool(processes=args.max_proc) as pool:
+        pool.map(validate, tasks)

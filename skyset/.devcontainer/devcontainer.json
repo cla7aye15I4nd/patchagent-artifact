@@ -1,0 +1,27 @@
+{
+    "name": "skyset",
+    "build": {
+        "dockerfile": "Dockerfile"
+    },
+    "runArgs": [
+        "--privileged",
+        "--network=host"
+    ],
+    "postCreateCommand": "git config --global --add safe.directory '*'",
+    "mounts": ["source=${localEnv:HOME}/.ssh,target=/root/.ssh,type=bind"],
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "ms-azuretools.vscode-docker",
+                "llvm-vs-code-extensions.vscode-clangd",
+                "ms-vscode.cmake-tools",
+                "ms-python.python",
+                "ms-python.black-formatter",
+                "github.copilot",
+                "iliazeus.vscode-ansi",
+                "mathematic.vscode-pdf",
+                "golang.go"
+            ]
+        }
+    }
+}

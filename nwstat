@@ -1,0 +1,76 @@
+#!/usr/bin/env python3
+
+import os
+from openpyxl import Workbook
+from openpyxl.styles import PatternFill
+from dotenv import load_dotenv
+from nvwa.sky.utils import get_all_task
+from nvwa.context import ContextManager
+from nvwa.logger import log
+from nvwa.parser.cwe import cwe2str
+
+
+if __name__ == "__main__":
+    load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
+
+    wb = Workbook()
+    wb.remove(wb.active)  # type: ignore
+
+    all_paths = {x: os.path.join("archives", x) for x in ["gpt-4o", "gpt-4-turbo", "claude-3-opus", "claude-3-sonnet", "claude-3-haiku"]}
+    patched_map = {}
+
+    for name, log_path in all_paths.items():
+        ws = wb.create_sheet(title=name)
+        ws.append(["project", "tag", "cwe", "count", "elapsed_time", "patched"])  # type: ignore
+        ws.column_dimensions["A"].width = 15  # type: ignore
+        ws.column_dimensions["B"].width = 35  # type: ignore
+        ws.column_dimensions["C"].width = 25  # type: ignore
+
+        data = []
+        counter = {}
+
+        for task in get_all_task(skip_setup=True, skip_linux=True):
+            cm = ContextManager(task, load_context=True, path=log_path)
+            is_patched = cm.patch is not None
+            hash_key = task.project + "-" + task.tag
+            if is_patched:
+                patched_map[hash_key] = 1
+                log.info(f"{task.project}-{task.tag} is patched")
+            else:
+                if hash_key not in patched_map:
+                    patched_map[hash_key] = 0
+                log.info(f"{task.project}-{task.tag} is not patched")
+
+            cwe = cwe2str(task.sanitizer_report.cwe)  # type: ignore
+            patch_path = os.path.join(task.path, "patch.diff")
+            data.append((task, [task.project, task.tag, cwe, cm.count, cm.elapsed_time, "" if cm.count == 0 else (1 if is_patched else 0)]))
+            if task.project not in counter:
+                counter[task.project] = [0, 0]
+            counter[task.project][0] += 1
+            counter[task.project][1] += 1 if is_patched else 0
+
+        data.sort(key=lambda x: (x[0].project, x[0].tag))
+        for task, [project, tag, cwe, count, elapsed_time, is_patched] in data:
+            ws.append([project, tag, cwe, count, elapsed_time, is_patched])  # type: ignore
+            if is_patched:
+                for col in range(1, 8):
+                    ws.cell(row=ws.max_row, column=col).fill = PatternFill(start_color="d9ead3", end_color="d9ead3", fill_type="solid")  # type: ignore
+
+    total = len(patched_map)
+    patched = sum(patched_map.values())
+    log.warning(f"patched: {patched}, total: {total}, ratio: {patched / total * 100:.2f}%")
+
+    cwe2count = {}
+    for task in get_all_task(skip_setup=True, skip_linux=True):
+        cwe = cwe2str(task.sanitizer_report.cwe)  # type: ignore
+        if cwe not in cwe2count:
+            cwe2count[cwe] = []
+        hash_key = task.project + "-" + task.tag
+        cwe2count[cwe].append(patched_map[hash_key])
+
+    for cwe, count in cwe2count.items():
+        log.warning(f"{cwe}: {sum(count)}/{len(count)} ({sum(count) / len(count) * 100:.2f}%)")
+
+    wb.save("patch_statistic.xlsx")
+
+# ./nwstat

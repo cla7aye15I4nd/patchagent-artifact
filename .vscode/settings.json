@@ -1,0 +1,21 @@
+{
+    "black-formatter.args": [
+        "--line-length",
+        "200"
+    ],
+    "python.languageServer": "Pylance",
+    "python.analysis.autoImportCompletions": true,
+    "python.analysis.typeCheckingMode": "basic",
+    "python.analysis.include": [
+        "nvwa/**",
+        "test/**",
+        "skyset/skyset_tools/**",
+    ],
+    "python.analysis.exclude": [
+        "skyset/**",
+        "!skyset/skyset_tools/**"
+    ],
+    "python.analysis.extraPaths": [
+        "skyset/",
+    ]
+}

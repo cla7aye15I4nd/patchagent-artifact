@@ -1,0 +1,288 @@
+#!/usr/bin/env python3
+
+import os
+import yaml
+from nvwa.sky.utils import get_all_task
+from nvwa.context import ContextManager
+from prettytable import PrettyTable
+from nvwa.parser.cwe import CWE
+from nvwa.logger import log
+import matplotlib
+import matplotlib.pyplot as plt
+from matplotlib import rcParams
+import matplotlib.colors as mcolors
+import tiktoken
+
+matplotlib.use("Agg")
+matplotlib.rcParams["pdf.fonttype"] = 42
+matplotlib.rcParams["ps.fonttype"] = 42
+
+MODEL_LIST = ["gpt-4o", "gpt-4-turbo", "claude-3-opus", "claude-3-sonnet", "claude-3-haiku"]
+
+
+def convert_model_name(model):
+    if model == "gpt-4o":
+        return "GPT-4o"
+    elif model == "gpt-4-turbo":
+        return "GPT-4 Turbo"
+    elif model == "claude-3-opus":
+        return "Claude-3 Opus"
+    elif model == "claude-3-sonnet":
+        return "Claude-3 Sonnet"
+    elif model == "claude-3-haiku":
+        return "Claude-3 Haiku"
+    else:
+        raise ValueError(f"Unknown model: {model}")
+
+
+def print_table():
+    SPATIAL = "Spatial Error"
+    TEMPORAL = "Temporal Error"
+    NULL = "Null Dereference"
+    NUMERIC = "Numeric Error"
+
+    def convert_cwe_to_type(cwe):
+        if cwe == CWE.OUT_OF_BOUNDS:
+            return SPATIAL
+        elif cwe == CWE.USE_AFTER_FREE:
+            return TEMPORAL
+        elif cwe == CWE.NULL_POINTER_DEREFERENCE:
+            return NULL
+        elif cwe in [CWE.INTERGER_OVERFLOW, CWE.DIVISION_BY_ZERO]:
+            return NUMERIC
+        else:
+            raise ValueError(f"Unknown CWE: {cwe}")
+
+    cases = {
+        SPATIAL: 0,
+        TEMPORAL: 0,
+        NULL: 0,
+        NUMERIC: 0,
+    }
+    for task in get_all_task(skip_setup=True, skip_linux=True):
+        cases[convert_cwe_to_type(task.sanitizer_report.cwe)] += 1  # type: ignore
+
+    print(cases)
+    table = PrettyTable()
+
+    order = [TEMPORAL, SPATIAL, NULL, NUMERIC]
+    table.field_names = ["\\textbf{Model}", f"\\textbf{{{order[0]}}}", f"\\textbf{{{order[1]}}}", f"\\textbf{{{order[2]}}}", f"\\textbf{{{order[3]}}}", "\\textbf{Total}"]
+    for model in MODEL_LIST:
+        counter = {
+            SPATIAL: 0,
+            TEMPORAL: 0,
+            NULL: 0,
+            NUMERIC: 0,
+        }
+        for task in get_all_task(skip_setup=True, skip_linux=True):
+            cm = ContextManager(task, load_context=True, path=os.path.join("archives", model))
+            if cm.patch is None:
+                continue
+            counter[convert_cwe_to_type(task.sanitizer_report.cwe)] += 1  # type: ignore
+        table.add_row(
+            [
+                convert_model_name(model),
+                f"{counter[order[0]]}/{cases[order[0]]} ({counter[order[0]] / cases[order[0]] * 100:.2f}%)",
+                f"{counter[order[1]]}/{cases[order[1]]} ({counter[order[1]] / cases[order[1]] * 100:.2f}%)",
+                f"{counter[order[2]]}/{cases[order[2]]} ({counter[order[2]] / cases[order[2]] * 100:.2f}%)",
+                f"{counter[order[3]]}/{cases[order[3]]} ({counter[order[3]] / cases[order[3]] * 100:.2f}%)",
+                f"{sum(counter.values())}/{sum(cases.values())} ({sum(counter.values()) / sum(cases.values()) * 100:.2f}%)",
+            ]
+        )
+    counter = {
+        SPATIAL: 0,
+        TEMPORAL: 0,
+        NULL: 0,
+        NUMERIC: 0,
+    }
+    for task in get_all_task(skip_setup=True, skip_linux=True):
+        for model in MODEL_LIST:
+            cm = ContextManager(task, load_context=True, path=os.path.join("archives", model))
+            if cm.patch is not None:
+                counter[convert_cwe_to_type(task.sanitizer_report.cwe)] += 1  # type: ignore
+                break
+
+    union_ratio = sum(counter.values()) / sum(cases.values())
+    table.add_row(
+        [
+            "\\textbf{Union}",
+            f"{counter[order[0]]}/{cases[order[0]]} ({counter[order[0]] / cases[order[0]] * 100:.2f}%)",
+            f"{counter[order[1]]}/{cases[order[1]]} ({counter[order[1]] / cases[order[1]] * 100:.2f}%)",
+            f"{counter[order[2]]}/{cases[order[2]]} ({counter[order[2]] / cases[order[2]] * 100:.2f}%)",
+            f"{counter[order[3]]}/{cases[order[3]]} ({counter[order[3]] / cases[order[3]] * 100:.2f}%)",
+            f"{sum(counter.values())}/{sum(cases.values())} ({union_ratio * 100:.2f}%)",
+        ]
+    )
+
+    print(table)
+    print(
+        table.get_latex_string()
+        .replace("%", "\\%")
+        .replace("\\textbf{Union}", "\\midrule\n\\textbf{Union}")
+        .replace("Claude-3 Opus", "\\midrule\nClaude-3 Opus")
+        .replace("GPT-4o", "\\midrule\nGPT-4o")
+        .replace("\\begin{tabular}{cccccc}", "\\begin{tabular}{c|ccccc}\n\\toprule")
+        .replace("\\end{tabular}", "\\bottomrule\n\\end{tabular}")
+    )
+
+    token_price = {
+        "gpt-4o": {
+            "input": 5,
+            "output": 15,
+        },
+        "gpt-4-turbo": {
+            "input": 10,
+            "output": 30,
+        },
+        "claude-3-opus": {
+            "input": 15,
+            "output": 75,
+        },
+        "claude-3-sonnet": {
+            "input": 3,
+            "output": 15,
+        },
+        "claude-3-haiku": {
+            "input": 0.25,
+            "output": 1.25,
+        },
+    }
+
+    encoder_map = {
+        "gpt-4o": tiktoken.encoding_for_model("gpt-4o"),
+        "gpt-4-turbo": tiktoken.encoding_for_model("gpt-4-turbo"),
+        "claude-3-opus": tiktoken.encoding_for_model("gpt-4-turbo"),
+        "claude-3-sonnet": tiktoken.encoding_for_model("gpt-4-turbo"),
+        "claude-3-haiku": tiktoken.encoding_for_model("gpt-4-turbo"),
+    }
+    iteration = {}
+    for model in MODEL_LIST:
+        iteration[model] = {
+            "price": [0 for _ in range(15)],
+            "itoken": [0 for _ in range(15)],
+            "otoken": [0 for _ in range(15)],
+            "fixed": [0 for _ in range(15)],
+        }
+
+    for model in MODEL_LIST:
+        encoder = encoder_map[model]
+        for task in get_all_task(skip_setup=True):
+            if task.project.startswith("linux"):
+                continue
+            cm = ContextManager(task, load_context=True, path=os.path.join("archives", model))
+            total_input_tokens = 0
+            total_output_tokens = 0
+
+            for k, context in enumerate(cm.contexts):
+                inital_prompt_size = len(encoder.encode(context.messages[0]["message"])) + len(encoder.encode(context.messages[1]["message"]))
+
+                last_role = "user"
+                for i in range(2, len(context.messages)):
+                    role = context.messages[i]["role"]
+                    if role == "ai":
+                        if last_role != "ai":
+                            total_input_tokens += inital_prompt_size
+                        total_output_tokens += len(encoder.encode(context.messages[i]["message"]))
+                    elif role == "tool":
+                        tool_len = len(encoder.encode(context.messages[i]["message"]["result"]))
+                        total_input_tokens += tool_len
+                    else:
+                        assert False
+
+                    last_role = role
+
+                if context.patch is not None:
+                    for j in range(k, 15):
+                        iteration[model]["fixed"][j] += 1
+
+                iteration[model]["itoken"][k] += total_input_tokens
+                iteration[model]["otoken"][k] += total_output_tokens
+                iteration[model]["price"][k] += total_input_tokens * token_price[model]["input"] / 1000000 + total_output_tokens * token_price[model]["output"] / 1000000
+
+    table = PrettyTable()
+    table.field_names = ["Round", "gpt-4o", "gpt-4-turbo", "claude-3-opus", "claude-3-sonnet", "claude-3-haiku"]
+    for i in range(15):
+        row = [f"Round {i + 1}"]
+        for model in MODEL_LIST:
+            price = iteration[model]["price"][i]
+            fixed = iteration[model]["fixed"][i]
+            row.append(f"{price:.2f}/{fixed} ({price / fixed:.2f})")
+        table.add_row(row)
+
+    print(table)
+    
+    table = PrettyTable()
+    table.field_names = ["\\textbf{Model}", "\\textbf{Avg. \\# Input Tokens}", "\\textbf{Avg. \\# Output Tokens}", "\\textbf{Avg. \\$ Cost}", "\\% Repaired"]
+    for i, model in enumerate(MODEL_LIST):
+        avg_itokens = iteration[model]["itoken"][14] / 178
+        avg_otokens = iteration[model]["otoken"][14] / 178
+        avg_price = iteration[model]["price"][14] / 178
+        table.add_row(
+            [
+                convert_model_name(model),
+                f"{round(avg_itokens):,}",
+                f"{round(avg_otokens):,}",
+                f"\\${avg_price:.2f}",
+                f"{iteration[model]['fixed'][14] / 178 * 100:.2f}\\%",
+            ]
+        )
+    table.add_row(
+        [
+            "\\textbf{Sum}",
+            f"{round(sum([iteration[model]['itoken'][14] for model in MODEL_LIST]) / 178):,}",
+            f"{round(sum([iteration[model]['otoken'][14] for model in MODEL_LIST]) / 178):,}",
+            f"\\${sum([iteration[model]['price'][14] for model in MODEL_LIST]) / 178:.2f}",
+            f"{union_ratio * 100:.2f}\\%",
+        ]
+    )
+    
+    print(table)
+    print(table.get_latex_string())
+
+
+def draw_software_graph():
+    rcParams['font.family'] = 'serif'
+    rcParams['font.serif'] = ['Times New Roman']
+
+    # Define the models
+    models = MODEL_LIST
+
+    compile_error = 0
+    security_error = 0
+    functional_error = 0
+        
+    for i, model in enumerate(models):
+        for task in get_all_task(skip_setup=True, skip_linux=True):
+            cm = ContextManager(task, load_context=True, path=os.path.join("archives", model))
+            for j, c in enumerate(cm.contexts):
+                for message in c.messages:
+                    if message["role"] == "tool" and message["message"]["name"] == "validate":
+                        result = message["message"]["result"]
+                        if result.endswith("Here is the validation report:\n"):
+                            assert result.startswith("Congratulations!")
+                        elif result.endswith("Compilation failed") or \
+                            result.endswith("Here is the validation report:\nPatch failed to apply") or \
+                            result.endswith("Compilation Timeout"):
+                            compile_error += 1
+                        elif result.endswith("Functional test failed, please carefully check the patch"):
+                            functional_error += 1
+                        elif "Here is the validation report:" in result or \
+                            result.endswith("Here is the validation report:\nTimeout"):
+                            security_error += 1
+                        elif not result.endswith("Please check the code and try again."):
+                            raise ValueError(f"Unknown message: {result}")
+
+
+    total = compile_error + security_error + functional_error
+    print(f"Compile Error: ({compile_error}/{total}) {compile_error / total * 100:.2f}%")
+    print(f"Security Error: ({security_error}/{total}) {security_error / total * 100:.2f}%")
+    print(f"Functional Error: ({functional_error}/{total}) {functional_error / total * 100:.2f}%")
+
+if __name__ == "__main__":
+    log.setLevel("ERROR")
+
+    # print_table()
+    draw_software_graph()
+
+
+# ./nwdraw
